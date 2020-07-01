@@ -1,5 +1,7 @@
 mod calls;
+mod error;
 
+use crate::error::IpseClientError;
 use calls::{
     AccountId, Balance, CreateOrderCallExt, DeleteCallExt, IpseRuntime as Runtime, OrdersStoreExt,
 };
@@ -44,16 +46,32 @@ impl Client {
         file: Vec<u8>,
         miners: Vec<AccountId>,
         days: u64,
-    ) -> Result<(), SubError> {
+    ) -> Result<Vec<(String, String)>, IpseClientError> {  // (miner_url, file_hash)
         let merkle_root = Self::make_merkle_root(&file);
         let data_length = file.len() as u64;
         self.call_create_order(key, merkle_root, data_length, miners, days)?;
+        // todo: http to miner
     }
 
-    pub fn get_file(&self, key: Vec<u8>) {}
+    pub fn get_file(&self, file_hash: &str) -> Result<Vec<u8>, IpseClientError> {
+        async_std::task::block_on(async move {
+            self.cli
+                .cat(file_hash)
+                .map_ok(|chunk| chunk.to_vec())
+                .try_concat()
+                .await
+                .map_err(|e| From::from(e))
+        })
+    }
 
-    pub fn delete_file(&self, key: Vec<u8>) {
-        let id = self.get_order_id_from_chain(key);
+    pub fn delete_file(&self, key: Vec<u8>) -> Result<(), IpseClientError> {
+        let id = self.get_order_id(key)?;
+        if let Some(id) = id {
+            self.call_delete(id)
+        } else {
+            Err(IpseClientError::NoneFile)
+        }
+        // todo: http to miner
     }
 
     fn make_merkle_root(file: &Vec<u8>) -> [u8; 32] {
@@ -65,7 +83,7 @@ impl Client {
         ordered_trie_root::<KeccakHasher, _>(chunks)
     }
 
-    fn get_order_id(&self, key: Vec<u8>) -> Result<Option<u64>, SubError> {
+    fn get_order_id(&self, key: Vec<u8>) -> Result<Option<u64>, IpseClientError> {
         if let Some(id) = self.key_to_id.get(key.as_ref()).cloned() {
             Ok(Some(id))
         } else {
@@ -73,7 +91,7 @@ impl Client {
         }
     }
 
-    fn get_order_id_from_chain(&self, key: Vec<u8>) -> Result<Option<u64>, SubError> {
+    fn get_order_id_from_chain(&self, key: Vec<u8>) -> Result<Option<u64>, IpseClientError> {
         async_std::task::block_on(async {
             let account_id = PairSigner::new(AccountKeyring::Alice.pair()).account_id();
             let orders: Vec<Order<AccountId, Balance>> = self.sub_cli.orders(None).await?;
@@ -97,7 +115,7 @@ impl Client {
         data_length: u64,
         miners: Vec<AccountId>,
         days: u64,
-    ) -> Result<(), SubError> {
+    ) -> Result<(), IpseClientError> {
         async_std::task::block_on(async move {
             let signer = PairSigner::new(AccountKeyring::Alice.pair());
             self.sub_cli
@@ -107,7 +125,7 @@ impl Client {
         })
     }
 
-    fn call_delete(&self, id: u64) -> Result<(), SubError> {
+    fn call_delete(&self, id: u64) -> Result<(), IpseClientError> {
         async_std::task::block_on(async move {
             let signer = PairSigner::new(AccountKeyring::Alice.pair());
             self.sub_cli.delete(&signer, id).await?;

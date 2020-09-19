@@ -21,6 +21,8 @@ http = "0.2.1"
 futures = "0.3"
 once_cell = "1.4.0"
 log = "0.4.0"
+reqwest = "0.10.1"
+anyhow = "1.0"
 
 sp-keyring = { version = "2.0.0-rc4", package = "sp-keyring" }
 frame-support = { version = "2.0.0-rc4", package = "frame-support" }

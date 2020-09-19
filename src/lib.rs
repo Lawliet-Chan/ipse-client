@@ -5,6 +5,7 @@ use crate::error::IpseClientError;
 use calls::{
     AccountId, Balance, CreateOrderCallExt, DeleteCallExt, IpseRuntime as Runtime, OrdersStoreExt,
 };
+use futures::{future, TryFutureExt};
 use http::Uri;
 use ipfs_api::{IpfsClient, TryFromUri};
 use keccak_hasher::KeccakHasher;
@@ -46,11 +47,25 @@ impl Client {
         file: Vec<u8>,
         miners: Vec<AccountId>,
         days: u64,
-    ) -> Result<Vec<(String, String)>, IpseClientError> {  // (miner_url, file_hash)
+    ) -> Result<Vec<String>, IpseClientError> {
+        // return file_hash
         let merkle_root = Self::make_merkle_root(&file);
         let data_length = file.len() as u64;
         self.call_create_order(key, merkle_root, data_length, miners, days)?;
-        // todo: http to miner
+        let cli = reqwest::Client::new();
+        let request_url = format!("{}/order?{}", self.miner_url, file_id);
+        let fhash_result = async_std::task::block_on(async move {
+            let resp = cli.post(request_url)
+                .body(file)
+                .send()
+                .await?;
+            resp.text().await
+        });
+       if fhash_result.is_ok() {
+           Ok(vec![fhash_result.unwrap()])
+       } else {
+           Err(From::from(fhash_result.err().unwrap()))
+       }
     }
 
     pub fn get_file(&self, file_hash: &str) -> Result<Vec<u8>, IpseClientError> {
@@ -67,11 +82,18 @@ impl Client {
     pub fn delete_file(&self, key: Vec<u8>) -> Result<(), IpseClientError> {
         let id = self.get_order_id(key)?;
         if let Some(id) = id {
-            self.call_delete(id)
+            self.call_delete(id);
+            let cli = reqwest::Client::new();
+            let request_url = format!("{}/order?{}", self.miner_url, id);
+            async_std::task::block_on(async move {
+                cli.delete(request_url)
+                    .send()
+                    .await
+                    .map_err(|e| From::from(e))
+            })
         } else {
             Err(IpseClientError::NoneFile)
         }
-        // todo: http to miner
     }
 
     fn make_merkle_root(file: &Vec<u8>) -> [u8; 32] {
